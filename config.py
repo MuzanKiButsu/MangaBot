@@ -8,9 +8,9 @@ env_vars = {
   # Get For tembo.io
   "DATABASE_URL_PRIMARY": "",
   # Logs Channel Username Without @
-  "CACHE_CHANNEL": "",
+  "CACHE_CHANNEL": "free_manga_dump",
   # Force Subs Channel username without @
-  "CHANNEL": "",
+  "CHANNEL": "@free_manga_dump",
   # {chap_num}: Chapter Number
   # {chap_name} : Manga Name
   # Ex : Chapter {chap_num} {chap_name} @Manhwa_Arena
