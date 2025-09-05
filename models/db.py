@@ -1,102 +1,126 @@
-import os
-from typing import Type, List, TypeVar, Optional
+from pymongo import MongoClient
+from bot import Vars, Bot
+import time
 
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlmodel import SQLModel, Field, Session, select, delete
-from sqlmodel.ext.asyncio.session import AsyncSession
+client = MongoClient(Vars.DB_URL)
+db = client[Vars.DB_NAME]
+subs = db["subs"]
+users = db["users"]
+acollection = db['premium']
 
-from tools import LanguageSingleton
+uts = users.find_one({"_id": Vars.DB_NAME})
+dts = subs.find_one({"_id": "data"})
 
-T = TypeVar("T")
+if not dts:
+    dts = {'_id': "data"}
+    subs.insert_one(dts)
 
-#user_data = database['users']
+if not uts:
+    uts = {'_id': Vars.DB_NAME}
+    users.insert_one(uts)
 
+async def add_premium(user_id, time_limit_days):
+    expiration_timestamp = int(time.time()) + time_limit_days * 24 * 60 * 60
+    premium_data = {
+        "user_id": user_id,
+        "expiration_timestamp": expiration_timestamp,
+    }
+    acollection.insert_one(premium_data)
 
-class ChapterFile(SQLModel, table=True):
-    url: str = Field(primary_key=True)
-    file_id: Optional[str]
-    file_unique_id: Optional[str]
-    cbz_id: Optional[str]
-    cbz_unique_id: Optional[str]
-    #telegraph_url: Optional[str]
+async def remove_premium(user_id):
+    acollection.delete_one({"user_id": user_id})
 
+async def remove_expired_users():
+    current_timestamp = int(time.time())
+    # Find and delete expired users
+    expired_users = acollection.find({"expiration_timestamp": {"$lte": current_timestamp}})
+    for expired_user in expired_users:
+        user_id = expired_user["user_id"]
+        acollection.delete_one({"user_id": user_id})
 
-class MangaOutput(SQLModel, table=True):
-    user_id: str = Field(primary_key=True, regex=r'\d+')
-    output: int = Field
+async def premium_user(user_id):
+    user = acollection.find_one({"user_id": user_id})
+    return user is not None
 
+def sync(name="data", type="dts"):
+    if type == "dts":
+        subs.replace_one({'_id': name}, dts)
+    elif type == "uts":
+        users.replace_one({'_id': name}, uts)
 
-class Subscription(SQLModel, table=True):
-    url: str = Field(primary_key=True)
-    user_id: str = Field(primary_key=True, regex=r'\d+')
+def get_users():
+    users_id = []
+    for i in users.find():
+        for j in i:
+            try: 
+                users_id.append(int(j))
+            except: 
+                continue
 
+    return users_id
 
-class LastChapter(SQLModel, table=True):
-    url: str = Field(primary_key=True)
-    chapter_url: str = Field
+def add_sub(user_id, manga_url: str, chapter=None):
+    user_id = str(user_id)
+    if manga_url not in dts:
+        dts[manga_url] = {}
+        sync()
 
+    if "users" not in dts[manga_url]:
+        dts[manga_url]["users"] = []
+        sync()
 
-class MangaName(SQLModel, table=True):
-    url: str = Field(primary_key=True)
-    name: str = Field
+    if user_id not in dts[manga_url]["users"]:
+        dts[manga_url]["users"].append(user_id)
+        sync()
 
+    if user_id not in uts:
+        uts[user_id] = {}
+        sync(Vars.DB_NAME, 'uts')
 
-class DB(metaclass=LanguageSingleton):
+    if "subs" not in uts[user_id]:
+        uts[user_id]["subs"] = []
+        sync(Vars.DB_NAME, 'uts')
 
-    def __init__(self, dbname: str = 'sqlite+aiosqlite:///test.db'):
-        if dbname.startswith('postgres://'):
-            dbname = dbname.replace('postgres://', 'postgresql+asyncpg://', 1)
-        elif dbname.startswith('postgresql://'):
-            dbname = dbname.replace('postgresql://', 'postgresql+asyncpg://', 1)
-        elif dbname.startswith('sqlite'):
-            dbname = dbname.replace('sqlite', 'sqlite+aiosqlite', 1)
+    if manga_url not in uts[user_id]["subs"]:
+        uts[user_id]["subs"].append(manga_url)
+        sync(Vars.DB_NAME, 'uts')
 
-        self.engine = create_async_engine(dbname)
+    sync()
+    sync(Vars.DB_NAME, 'uts')
 
-    async def connect(self):
-        async with self.engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all, checkfirst=True)
+def get_subs(user_id, manga_url: str = None):
+    user_id = str(user_id)
+    if user_id not in uts:
+        uts[user_id] = {}
+        sync(Vars.DB_NAME, 'uts')
 
-    async def add(self, other: SQLModel):
-        async with AsyncSession(self.engine) as session:  # type: AsyncSession
-            async with session.begin():
-                session.add(other)
+    if "subs" not in uts[user_id]:
+        uts[user_id]["subs"] = []
+        sync(Vars.DB_NAME, 'uts')
 
-    async def get(self, table: Type[T], id) -> T:
-        async with AsyncSession(self.engine) as session:  # type: AsyncSession
-            return await session.get(table, id)
+    if manga_url:
+        if user_id in uts:
+            if manga_url in uts[user_id]["subs"]:
+                return True
+            else:
+                return None
 
-    async def get_all(self, table: Type[T]) -> List[T]:
-        async with AsyncSession(self.engine) as session:  # type: AsyncSession
-            statement = select(table)
-            return await session.exec(statement=statement)
+    if user_id in uts:
+        if "subs" not in uts[user_id]:
+            uts[user_id]["subs"] = []
+            sync(Vars.DB_NAME, 'uts')
 
-    async def erase(self, other: SQLModel):
-        async with AsyncSession(self.engine) as session:  # type: AsyncSession
-            async with session.begin():
-                await session.delete(other)
+        return uts[user_id]["subs"]
 
-    async def get_chapter_file_by_id(self, id: str):
-        async with AsyncSession(self.engine) as session:  # type: AsyncSession
-            statement = select(ChapterFile).where((ChapterFile.file_unique_id == id) |
-                                                  (ChapterFile.cbz_unique_id == id) |
-                                                  (ChapterFile.telegraph_url == id))
-            return (await session.exec(statement=statement)).first()
+def delete_sub(user_id, manga_url: str):
+    user_id = str(user_id)
+    if manga_url in dts and user_id in dts[manga_url]["users"]:
+        dts[manga_url]["users"].remove(user_id)
+        sync()
 
-    async def get_subs(self, user_id: str, filters=None) -> List[MangaName]:
-        async with AsyncSession(self.engine) as session:
-            statement = (
-                select(MangaName)
-                .join(Subscription, Subscription.url == MangaName.url)
-                .where(Subscription.user_id == user_id)
-            )
-            for filter_ in filters or []:
-                statement = statement.where(MangaName.name.ilike(f'%{filter_}%') | MangaName.url.ilike(f'%{filter_}%'))
-            return (await session.exec(statement=statement)).all()
+    if user_id in uts and manga_url in uts[user_id]["subs"]:
+        uts[user_id]["subs"].remove(manga_url)
+        sync(Vars.DB_NAME, 'uts')
 
-    async def erase_subs(self, user_id: str):
-        async with AsyncSession(self.engine) as session:
-            async with session.begin():
-                statement = delete(Subscription).where(Subscription.user_id == user_id)
-                await session.exec(statement=statement)
-
+    sync()
+    sync(Vars.DB_NAME, 'uts')
