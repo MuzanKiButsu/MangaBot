@@ -15,4 +15,5 @@ alembic
 loguru
 flask
 gunicorn
+motor
 httpx # New Request 
